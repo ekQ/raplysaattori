@@ -56,12 +56,14 @@ class Lyrics:
         rx = re.compile(u'[^\wåäö\n]+')
         self.text = rx.sub(' ', self.text)
         # If there are more than 2 consecutive newlines, remove some of them
+        # (just to make the cleaned text look prettier)
         self.text = re.sub('\n\n+', '\n\n', self.text)
         # Remove duplicate rows
         lines = self.text.split('\n')
         uniq_lines = set()
         new_text = ''
         for l in lines:
+            l = l.strip()
             if len(l) > 0 and l in uniq_lines:
                 continue
             uniq_lines.add(l)
