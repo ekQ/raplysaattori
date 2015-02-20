@@ -5,18 +5,7 @@ import re
 import numpy as np
 import os
 
-def is_vow(c):
-    '''
-    Is the given (lowercase) character a vowel or not.
-    '''
-    return c in u'aeiouyäöå'
-
-def is_space(c):
-    '''
-    Is the given character a space or newline (other space characters are 
-    cleaned in the preprocessing phase).
-    '''
-    return c==' ' or c=='\n'
+import phonetics as ph
 
 class Lyrics:
     '''
@@ -24,12 +13,15 @@ class Lyrics:
     statistics like average rhyme length out of the lyrics.
     '''
 
-    def __init__(self, filename=None, print_stats=False, text=None):
+    def __init__(self, filename=None, print_stats=False, text=None, 
+                 language='fi', lookback=10):
         '''
-        Lyrics can be read from the file (default) or passed directly to this
-        constructor.
+        Lyrics can be read from the file (default) or passed directly
+        to this constructor.
         '''
         self.text_raw = None
+        # How many previous words are checked for a rhyme.
+        self.lookback = lookback
         if filename is not None:
             self.filename = filename
             f = codecs.open(filename, 'r', 'utf8')
@@ -38,10 +30,12 @@ class Lyrics:
         elif text is not None:
             self.text_raw = text
             self.filename = 'No filename'
+        self.language = language
 
         if self.text_raw is not None:
-            self.clean_text(self.text_raw)
-            self.get_vowel_representation()
+            cleaning_ok = self.clean_text(self.text_raw)
+            self.compute_vowel_representation()
+            self.avg_rhyme_length, self.longest_rhyme = self.rhyme_stats()
 
             if print_stats:
                 #self.print_song_stats_compact()
@@ -51,26 +45,43 @@ class Lyrics:
         '''
         Preprocess text by removing unwanted characters and duplicate rows.
         '''
-        self.text = text.lower()
-        # Replace all but word characters and newlines by spaces
-        rx = re.compile(u'[^\wåäö\n]+')
+        if self.language == 'fi':
+            self.text = text.lower()
+            # Replace all but word characters and newlines by spaces
+            rx = re.compile(u'[^\wåäö\n]+')
+        else: # English
+            self.text = text
+            # For English we need to keep apostrophes since they affect the 
+            # pronunciation
+            rx = re.compile(u"[^\wåÅäÄöÖéÉ'’\.\?!\n]+")
+
         self.text = rx.sub(' ', self.text)
         # If there are more than 2 consecutive newlines, remove some of them
         # (just to make the cleaned text look prettier)
         self.text = re.sub('\n\n+', '\n\n', self.text)
         # Remove duplicate rows
-        lines = self.text.split('\n')
+        self.lines = self.text.split('\n')
+
         uniq_lines = set()
         new_text = ''
-        for l in lines:
+        for l in self.lines:
             l = l.strip()
             if len(l) > 0 and l in uniq_lines:
                 continue
+            # Remove lines that are within brackets/parenthesis
+            if len(l) >= 2 and ((l[0]=='[' and l[-1]==']') or (l[0]=='(' and l[-1]==')')):
+                continue
             uniq_lines.add(l)
-            new_text += l + '\n'
+            if self.language == 'fi':
+                new_text += l + '\n'
+            else: # English
+                # Add '.' to the end of line since otherwise the lines might be
+                # too long so that espeak won't transcribe the whole line
+                new_text += l + '.\n'
+
         self.text = new_text
 
-    def get_vowel_representation(self):
+    def compute_vowel_representation(self):
         '''
         Compute a representation of the lyrics where only vowels are preserved.
         '''
@@ -78,29 +89,45 @@ class Lyrics:
         self.vow_idxs = [] # Indices of the vowels in self.text list
         self.word_ends = [] # Indices of the last characters of each word
         self.words = [] # List of words in the lyrics
+        self.line_idxs = []
+
+        if len(self.language) >= 2 and self.language[:2] == 'en':
+            self.text_orig = self.text
+            self.text = ph.get_phonetic_transcription(self.text, output_fname=self.filename+'.ipa')
+            self.word_ends_orig = []
+            self.words_orig = []
 
         prev_space_idx = -1 # Index of the previous space char
+        line_idx = 0 # Line index of the current character
         # Go through the lyrics char by char
         for i in range(len(self.text)):
+            self.line_idxs.append(line_idx)
             c = self.text[i]
-            if is_vow(c):
+            c = ph.map_vow(c, self.language)
+            if ph.is_vow(c, self.language):
                 # Ignore double vowels
+                # (in English this applies probably only to 'aa' as in 'bath'
+                # which rhymes with 'trap' that has only 'a')
                 if i > 0 and self.text[i-1] == c:
                     # Index of a double vowel points to the latter occurrence
                     self.vow_idxs[-1] = i
                     continue
                 self.vow.append(c)
                 self.vow_idxs.append(i)
-            elif is_space(c):
+            elif ph.is_space(c):
+                if c in '\n':
+                    line_idx += 1
+                elif c in '.!?' and i < len(self.text)-1 and self.text[i+1] != '\n':
+                    line_idx += 1
                 # If previous char was not a space, we've encountered word end
-                if len(self.vow) > 0 and not is_space(self.text[i-1]):
+                if len(self.vow) > 0 and not ph.is_space(self.text[i-1]):
                     # Put together the new word. Potential consonants in the 
                     # end are ignored
                     new_word = self.text[prev_space_idx+1:self.vow_idxs[-1]+1]
                     # Check that the new word contains at least one vowel
                     no_vowels = True
                     for c2 in new_word:
-                        if is_vow(c2):
+                        if ph.is_vow(c2, self.language):
                             no_vowels = False
                             break
                     if no_vowels:
@@ -110,18 +137,20 @@ class Lyrics:
                     self.words.append(new_word)
                 prev_space_idx = i
 
-    def rhyme_length(self, wpos2, lookback=10):
+        if len(self.language) >= 2 and self.language[:2] == 'en':
+            self.lines_orig = self.text_orig.split('\n')
+
+    def rhyme_length(self, wpos2):
         '''
         Length of rhyme (in vowels). The latter part of the rhyme ends with 
         word self.words[wpos2].
 
         Input:
             wpos2       Word index of the end of the rhyme.
-            lookback    How many previous words are checked for a rhyme.
         '''
         max_length = 0
         max_wpos1 = None
-        wpos1 = max(0,wpos2-lookback)
+        wpos1 = max(0,wpos2-self.lookback)
         while wpos1 < wpos2:
             rl = self.rhyme_length_fixed(wpos1, wpos2)
             if rl > max_length:
@@ -138,7 +167,6 @@ class Lyrics:
         Input:
             wpos1       Word index of the last word in the first part of the rhyme.
             wpos2       Word index of the end of the rhyme.
-            lookback    How many previous words are checked for a rhyme.
         '''
         if wpos1 < 0: # Don't wrap
             return 0
@@ -149,6 +177,24 @@ class Lyrics:
         p2 = self.word_ends[wpos2]
         l = 0
         while self.vow[p1-l] == self.vow[p2-l]:
+            # Make sure that exactly same words are not used
+            if wpos1 > 0 and p1-l <= self.word_ends[wpos1-1] and wpos2 > 0 and p2-l <= self.word_ends[wpos2-1]:
+                # Get the first and last character indices of the words surrounding the vowels at p1-l and p2-l
+                prev_s1 = self.vow_idxs[p1-l]
+                while prev_s1 > 0 and not ph.is_space(self.text[prev_s1-1]):
+                    prev_s1 -= 1
+                prev_s2 = self.vow_idxs[p2-l]
+                while prev_s2 > 0 and not ph.is_space(self.text[prev_s2-1]):
+                    prev_s2 -= 1
+                next_s1 = self.vow_idxs[p1-l]
+                while next_s1 < len(self.text)-1 and not ph.is_space(self.text[next_s1+1]):
+                    next_s1 += 1
+                next_s2 = self.vow_idxs[p2-l]
+                while next_s2 < len(self.text)-1 and not ph.is_space(self.text[next_s2+1]):
+                    next_s2 += 1
+                if next_s1-prev_s1 == next_s2-prev_s2 and self.text[prev_s1:next_s1+1] ==  self.text[prev_s2:next_s2+1]:
+                    break
+
             l += 1
             if p1-l < 0 or p2-l <= p1:
                 break
@@ -185,34 +231,36 @@ class Lyrics:
         return avg_rl, max_rhyme
 
     def get_avg_rhyme_length(self):
-        avg_rl, max_rhyme = self.rhyme_stats()
-        return avg_rl
+        return self.avg_rhyme_length
 
     def print_song_stats(self):
         print '------------------------------------------'
         print "%s\n" % self.filename
 
-        avg_rl, max_rhyme = self.rhyme_stats()
-        print "Avg rhyme length: %.3f\n" % avg_rl
+        print "Avg rhyme length: %.3f\n" % self.avg_rhyme_length
 
-        self.print_rhyme(max_rhyme)
+        self.print_rhyme(self.longest_rhyme)
         print
         #print '------------------------------------------'
 
     def print_song_stats_compact(self):
-        avg_rl, max_rhyme = self.rhyme_stats()
-        print "%.3f  %s" % (avg_rl, self.filename)
+        print "%.3f  %s" % (self.avg_rhyme_length, self.filename)
 
     def print_rhyme(self, rhyme_tuple):
+        print self.get_rhyme_str(rhyme_tuple)
+
+    def get_rhyme_str(self, rhyme_tuple):
         '''
-        Print a given rhyme tuple where the rhyming vowels have been
-        capitalized.
+        Construct a string of a given rhyme tuple.
         '''
+        ret = ''
         rl, wpos1, wpos2 = rhyme_tuple
+        if wpos1 is None or wpos2 is None:
+            return ''
         p2 = self.vow_idxs[self.word_ends[wpos2]]
         p2_orig = p2
         # Find the ending of the last word
-        while not is_space(self.text[p2]):
+        while not ph.is_space(self.text[p2]):
             p2 += 1
         p0 = self.vow_idxs[self.word_ends[wpos1]-rl]
         p0_orig = p0
@@ -223,11 +271,32 @@ class Lyrics:
         cap_line = ''
         rw1, rw2 = self.get_rhyming_vowels(rhyme_tuple)
         for i in range(p0,p2+1):
-            if i in rw1 or i in rw2:
-                cap_line += self.text[i].capitalize()
+            if self.language == 'fi':
+                if i in rw1 or i in rw2:
+                    cap_line += self.text[i].capitalize()
+                else:
+                    cap_line += self.text[i]
             else:
-                cap_line += self.text[i]
-        print "Longest rhyme (l=%d): %s" % (rl, cap_line)
+                if i == min(rw1) or i == min(rw2):
+                    cap_line += ' | ' + self.text[i]
+                elif i == max(rw1) or i == max(rw2):
+                    cap_line += self.text[i] + '|'
+                else:
+                    cap_line += self.text[i]
+        ret += "Longest rhyme (l=%d): %s\n" % (rl, cap_line)
+        if self.language != 'fi':
+            # Get the corresponding lines from the original lyrics
+            line_beg = self.line_idxs[p0]
+            line_end = self.line_idxs[p2]
+            for i in range(line_beg, line_end+1):
+                if i < len(self.lines_orig):
+                    ret += self.lines_orig[i] + '\n'
+        return ret
+
+    def get_longest_rhyme(self):
+        rhyme_str = self.get_rhyme_str(self.longest_rhyme)
+        rhyme_str += self.filename + '\n'
+        return self.longest_rhyme[0], rhyme_str
 
     def get_rhyming_vowels(self, rhyme_tuple):
         '''
@@ -246,7 +315,7 @@ class Lyrics:
         n_caps = 0
         p = self.vow_idxs[self.word_ends[wpos1]]
         while n_caps < rl:
-            if is_vow(self.text[p]):
+            if ph.is_vow(self.text[p], self.language):
                 rhyme_idxs1.append(p)
                 # Increase the counter only if the vowel is not a double vowel
                 if self.text[p] != self.text[p+1]:
@@ -259,7 +328,7 @@ class Lyrics:
         p = self.vow_idxs[self.word_ends[wpos2]]
         p_last = p
         while n_caps < rl:
-            if is_vow(self.text[p]):
+            if ph.is_vow(self.text[p], self.language):
                 rhyme_idxs2.append(p)
                 # Increase the counter only if the vowel is not a double vowel.
                 # The last vowel must be always counted.
