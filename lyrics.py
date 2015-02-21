@@ -112,6 +112,8 @@ class Lyrics:
                     # Index of a double vowel points to the latter occurrence
                     self.vow_idxs[-1] = i
                     continue
+                # TODO Diftongs should not be split (i.e. "price" should
+                # not rhyme with "trap kit"). This has been fixed in BattleBot
                 self.vow.append(c)
                 self.vow_idxs.append(i)
             elif ph.is_space(c):
