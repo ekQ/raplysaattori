@@ -14,5 +14,7 @@ You need to have eSpeak (http://espeak.sourceforge.net/) installed, if you want 
 Blog posts about Raplyzer:
 
 http://mining4meaning.com/2015/02/13/raplyzer/
+
 http://mining4meaning.com/2014/08/25/rap_algoritmi/ (in Finnish)
+
 http://mining4meaning.com/2014/09/06/raplysaattorifi/ (in Finnish)
