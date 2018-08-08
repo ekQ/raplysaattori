@@ -44,15 +44,15 @@ def read_lyrics(lyrics_dir='lyrics_en', artist=None, album=None,
         if album is not None:
             albums = [album]
         else:
-            albums = os.listdir(lyrics_dir+'/'+a)
+            albums = os.listdir(os.path.join(lyrics_dir, a))
             albums = sort_albums_by_year(albums)
         for al in albums:
             album_rls = []
-            songs = os.listdir(lyrics_dir+'/'+a+'/'+al)
+            songs = os.listdir(os.path.join(lyrics_dir, a, al))
             # Only the .txt files
             songs = [s for s in songs if len(s)>=4 and s[-4:]=='.txt']
             for song in songs:
-                file_name = lyrics_dir+'/'+a+'/'+al+'/'+song
+                file_name = os.path.join(lyrics_dir, a, al, song)
                 l = Lyrics(file_name, print_stats=print_stats, 
                            language=language, lookback=lookback)
                 rl = l.get_avg_rhyme_length()
